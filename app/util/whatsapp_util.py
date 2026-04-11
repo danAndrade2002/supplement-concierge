@@ -1,69 +1,61 @@
+# TODO: Review if we will really need this
+
 import logging
 
-import httpx
+from twilio.rest import Client
 
 from app.config import settings
 from app.models.incoming_message import IncomingMessage
 
 logger = logging.getLogger(__name__)
 
-META_API_BASE = "https://graph.facebook.com/v21.0"
+_twilio_client: Client | None = None
+
+
+def _get_twilio_client() -> Client:
+    global _twilio_client
+    if _twilio_client is None:
+        _twilio_client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+    return _twilio_client
 
 
 class WhatsappUtil:
-    @staticmethod
-    def parse_message(payload: dict) -> IncomingMessage | None:
-        """Extract sender phone and message text from a WhatsApp message payload.
 
-        Returns None for non-message events (status updates, read receipts, etc.).
+    @staticmethod
+    def parse_message(form_data: dict) -> IncomingMessage | None:
+        """Extract sender phone and message text from Twilio's form-encoded webhook.
+
+        Returns None for non-message events (status callbacks, media-only, etc.).
         """
-        try:
-            entry = payload["entry"][0]
-            change = entry["changes"][0]
-            value = change["value"]
-            message = value["messages"][0]
-            whatsapp_id = message["from"]
-            message_text = message.get("text", {}).get("body", "")
-            if not message_text:
-                return None
-            return IncomingMessage(whatsapp_id=whatsapp_id, message_text=message_text)
-        except (KeyError, IndexError):
+        body = form_data.get("Body", "").strip()
+        sender = form_data.get("From", "")
+        if not body or not sender:
             return None
 
+        whatsapp_id = sender.replace("whatsapp:", "")
+        return IncomingMessage(whatsapp_id=whatsapp_id, text=body)
+
     @staticmethod
-    async def send_message(to: str, body: str) -> None:
-        """Send a text message via the Meta WhatsApp Cloud API."""
-        url = f"{META_API_BASE}/{settings.META_PHONE_NUMBER_ID}/messages"
-        headers = {
-            "Authorization": f"Bearer {settings.META_API_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "text",
-            "text": {"body": body},
-        }
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                logger.error("Meta API error %s: %s", resp.status_code, resp.text)
+    def send_message(to: str, body: str) -> None:
+        """Send a WhatsApp message via the Twilio SDK."""
+        client = _get_twilio_client()
+        to_clean = to.replace("whatsapp:", "")
+        if not to_clean.startswith("+"):
+            to_clean = f"+{to_clean}"
+        to_addr = f"whatsapp:{to_clean}"
+        from_addr = f"whatsapp:{settings.TWILIO_PHONE_NUMBER}"
+
+        try:
+            message = client.messages.create(
+                body=body,
+                from_=from_addr,
+                to=to_addr,
+            )
+            logger.info("Message sent, SID: %s", message.sid)
+        except Exception:
+            logger.exception("Failed to send message to %s", to)
 
     @staticmethod
     def send_message_sync(to: str, body: str) -> None:
-        """Synchronous variant for use in Celery tasks."""
-        url = f"{META_API_BASE}/{settings.META_PHONE_NUMBER_ID}/messages"
-        headers = {
-            "Authorization": f"Bearer {settings.META_API_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "text",
-            "text": {"body": body},
-        }
-        with httpx.Client() as client:
-            resp = client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                logger.error("Meta API error %s: %s", resp.status_code, resp.text)
+        """Synchronous variant for Celery tasks (Twilio SDK is already sync)."""
+        WhatsappUtil.send_message(to, body)

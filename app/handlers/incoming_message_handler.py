@@ -21,12 +21,15 @@ class IncomingMessageHandler:
     def __init__(self):
         self.llm_client = LLMClient()
 
+    async def handle_twilio_migration(self, incoming_message: IncomingMessage) -> str:
+        return "Sorry, we are currently migrating to Twilio. Please try again in a moment."
+        
     async def handle(self, incoming_message: IncomingMessage) -> str:
         async with async_session_factory() as db:
             user_repo = UserRepository(db)
             chat_repo = ChatRepository(db)
-
-            user = await user_repo.get_or_create(incoming_message.whatsapp_id)
+            # TODO: Review how are we handling the user and chat history due to Twilo's migration
+            user = await user_repo.get_or_create(incoming_message)
             history = await chat_repo.load_history(user.id)
 
             await chat_repo.save_message(user.id, "user", incoming_message.text)
