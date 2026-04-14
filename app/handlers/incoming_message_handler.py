@@ -28,8 +28,7 @@ class IncomingMessageHandler:
         async with async_session_factory() as db:
             user_repo = UserRepository(db)
             chat_repo = ChatRepository(db)
-            # TODO: Review how are we handling the user and chat history due to Twilo's migration
-            user = await user_repo.get_or_create(incoming_message)
+            user = await user_repo.get_or_create(incoming_message.phone_number)
             history = await chat_repo.load_history(user.id)
 
             await chat_repo.save_message(user.id, "user", incoming_message.text)
@@ -39,11 +38,10 @@ class IncomingMessageHandler:
                 reply = await self._process_with_llm(
                     tool_factory, user.allergies or [], history, incoming_message.text
                 )
+                await chat_repo.save_message(user.id, "assistant", reply)
             except Exception:
                 logger.exception("LLM call failed")
                 reply = "Sorry, something went wrong. Please try again in a moment."
-
-            await chat_repo.save_message(user.id, "assistant", reply)
 
         return reply
 

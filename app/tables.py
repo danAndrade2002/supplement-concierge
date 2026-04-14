@@ -12,9 +12,9 @@ class Base(DeclarativeBase):
 
 class User(Base):
     __tablename__ = "users"
-
+    # Create a UUID for PK instead of phone_number for safety 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    whatsapp_id: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    phone_number: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     allergies: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 

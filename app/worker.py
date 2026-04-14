@@ -41,10 +41,10 @@ def check_reminders():
                 f"Hi! Your stock of {reminder.product_name} might be running low. "
                 f"Would you like me to check today's prices?"
             )
-            WhatsappUtil.send_message_sync(user.whatsapp_id, message)
+            WhatsappUtil.send_message_sync(user.phone_number, message)
             reminder.status = "completed"
             logger.info(
-                "Sent reminder to %s for '%s'", user.whatsapp_id, reminder.product_name
+                "Sent reminder to %s for '%s'", user.phone_number, reminder.product_name
             )
 
         db.commit()
