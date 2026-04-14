@@ -8,23 +8,23 @@ A WhatsApp chatbot that acts as a personal supplement assistant. It uses Google 
 WhatsApp User
      |
      v
-Meta Cloud API  -->  ngrok  -->  FastAPI (POST /webhook)
-                                      |
-                                      v
-                              IncomingMessageHandler
-                              /         |          \
-                    UserRepo      ChatRepo      LLMClient (Gemini)
-                        |             |               |
-                        v             v               v
-                           PostgreSQL            ToolFactory
-                                                 /        \
-                                          SearchTool   NotifyTool
-                                              |             |
-                                         Marketplaces   ReminderRepo
-                                        (interfaces)        |
-                                                        PostgreSQL
+Twilio WhatsApp API  -->  ngrok  -->  FastAPI (POST /webhook)
+                                           |
+                                           v
+                                   IncomingMessageHandler
+                                   /         |          \
+                         UserRepo      ChatRepo      LLMClient (Gemini)
+                             |             |               |
+                             v             v               v
+                                PostgreSQL            ToolFactory
+                                                      /        \
+                                               SearchTool   NotifyTool
+                                                   |             |
+                                              Marketplaces   ReminderRepo
+                                             (interfaces)        |
+                                                             PostgreSQL
 
-Celery Beat (daily 9AM) --> Celery Worker --> check due reminders --> send WhatsApp alerts
+Celery Beat (daily 9AM) --> Celery Worker --> check due reminders --> send WhatsApp via Twilio
 ```
 
 ## Tech Stack
@@ -33,14 +33,15 @@ Celery Beat (daily 9AM) --> Celery Worker --> check due reminders --> send Whats
 - **PostgreSQL 16** for users, chat history, and reminders
 - **Redis 7** as the Celery message broker
 - **Celery** for scheduled background tasks (daily reminder checks)
-- **Google Gemini 2.0 Flash** as the LLM (prompt-driven tool calling, no SDK framework)
+- **Google Gemini 2.5 Flash-Lite** as the LLM (prompt-driven tool calling)
+- **Twilio SDK** for WhatsApp messaging (send/receive)
 - **Docker Compose** to run all services
 
 ## Project Structure
 
 ```
 app/
-├── main.py                     # FastAPI endpoints (GET/POST /webhook)
+├── main.py                     # FastAPI webhook endpoint (POST /webhook)
 ├── config.py                   # Environment config via pydantic-settings
 ├── constants.py                # System prompt for the LLM
 ├── database.py                 # Async + sync SQLAlchemy engines
@@ -65,13 +66,13 @@ app/
 │   ├── chat_repository.py      # Chat history DB operations
 │   └── reminder_repository.py  # Reminder DB operations
 └── util/
-    └── whatsapp_util.py        # Parse incoming webhooks, send messages via Meta API
+    └── whatsapp_util.py        # Parse incoming webhooks, send messages via Twilio SDK
 ```
 
 ## Prerequisites
 
 - Docker and Docker Compose
-- A [Meta Developer](https://developers.facebook.com/) account with a WhatsApp Business app
+- A [Twilio](https://www.twilio.com/) account with the WhatsApp Sandbox enabled
 - A [Google AI Studio](https://aistudio.google.com/) API key for Gemini
 - [ngrok](https://ngrok.com/) for local webhook tunneling
 
@@ -90,9 +91,11 @@ Create `.env` with your credentials:
 DATABASE_URL=postgresql+asyncpg://whats_bot:whats_bot@postgres:5432/whats_bot
 SYNC_DATABASE_URL=postgresql+psycopg2://whats_bot:whats_bot@postgres:5432/whats_bot
 REDIS_URL=redis://redis:6379/0
-META_VERIFY_TOKEN=<choose-a-secret-token>
-META_API_TOKEN=<your-meta-api-token>
-META_PHONE_NUMBER_ID=<your-phone-number-id>
+
+TWILIO_ACCOUNT_SID=<your-twilio-account-sid>
+TWILIO_AUTH_TOKEN=<your-twilio-auth-token>
+TWILIO_PHONE_NUMBER=<your-twilio-sandbox-number>
+
 GEMINI_API_KEY=<your-gemini-api-key>
 ```
 
@@ -116,20 +119,20 @@ docker compose exec app alembic upgrade head
 ngrok http 8000
 ```
 
-Copy the HTTPS URL (e.g. `https://xyz.ngrok-free.app`) and configure it in the Meta Developer Portal:
+Copy the HTTPS URL (e.g. `https://xyz.ngrok-free.app`) and configure it in the Twilio Console:
 
-1. Go to your WhatsApp app > Configuration > Webhooks
-2. Set the callback URL to `https://xyz.ngrok-free.app/webhook`
-3. Set the verify token to the same value as `META_VERIFY_TOKEN` in your `.env`
-4. Subscribe to the `messages` webhook field
+1. Go to [Twilio Console > Messaging > Try it out > Send a WhatsApp message](https://console.twilio.com/us1/develop/sms/try-it-out/whatsapp-learn)
+2. Join the Sandbox by sending the join code to the Twilio Sandbox number from your WhatsApp
+3. In the Sandbox settings, set **"When a message comes in"** to `https://xyz.ngrok-free.app/webhook`
+4. Set the HTTP method to **POST**
 
 ### 5. Test it
 
-Send a WhatsApp message to your business number. The bot should reply.
+Send a WhatsApp message to the Twilio Sandbox number. The bot should reply.
 
 ## How It Works
 
-1. **User sends a WhatsApp message** -- Meta forwards it as a webhook POST to `/webhook`
+1. **User sends a WhatsApp message** -- Twilio forwards it as a webhook POST to `/webhook`
 2. **`IncomingMessageHandler`** orchestrates the flow:
    - Gets or creates the user in the database
    - Loads the last 10 messages for conversation context
@@ -137,7 +140,7 @@ Send a WhatsApp message to your business number. The bot should reply.
 3. **Gemini responds** with either plain text or a JSON action block:
    - Plain text: sent directly back to the user
    - Action (e.g. `{"action": "search_tool", "params": {...}}`): dispatched via `ToolFactory`, result fed back to Gemini for a natural-language reply
-4. **Daily at 9 AM**, Celery Beat triggers a task that checks for due reminders and sends proactive WhatsApp alerts
+4. **Daily at 9 AM**, Celery Beat triggers a task that checks for due reminders and sends proactive WhatsApp alerts via Twilio
 
 ## Adding a New Tool
 
