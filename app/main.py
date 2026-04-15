@@ -32,7 +32,6 @@ async def handle_webhook(
     )   
 
     reply = await incoming_message_handler.handle(incoming_message)
-    # reply = await incoming_message_handler.handle_twilio_migration(Body)
     logger.info("Sending reply to %s: %s", From, reply)
     resp = MessagingResponse()
     resp.message(reply)

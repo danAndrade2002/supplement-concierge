@@ -10,6 +10,7 @@ from app.database import async_session_factory
 from app.llm.llm_client import LLMClient
 from app.llm.tools.tool_factory import ToolFactory
 from app.models.incoming_message import IncomingMessage
+from app.models.llm_response import LLMResponse
 from app.repositories.chat_repository import ChatRepository
 from app.repositories.user_repository import UserRepository
 
@@ -20,9 +21,6 @@ class IncomingMessageHandler:
 
     def __init__(self):
         self.llm_client = LLMClient()
-
-    async def handle_twilio_migration(self, incoming_message: IncomingMessage) -> str:
-        return "Sorry, we are currently migrating to Twilio. Please try again in a moment."
         
     async def handle(self, incoming_message: IncomingMessage) -> str:
         async with async_session_factory() as db:
@@ -45,6 +43,7 @@ class IncomingMessageHandler:
 
         return reply
 
+    # TODO: Improve how we process the LLM response and call the tool if needed.
     async def _process_with_llm(
         self, tool_factory: ToolFactory, allergies: list[str],
         history: list[dict], user_message: str,
@@ -52,19 +51,20 @@ class IncomingMessageHandler:
         system_prompt = self._build_system_prompt(allergies)
         contents = self._build_contents(history, user_message)
 
-        reply_text = await self.llm_client.call(system_prompt, contents)
+        llm_response: LLMResponse = await self.llm_client.call(system_prompt, contents)
 
-        action = self._parse_action(reply_text)
-        if action is None:
-            return reply_text
+        if llm_response.action is None:
+            logger.info(f"No tool calling needed, returning response: {llm_response.text}")
+            return llm_response.text
 
-        logger.info("LLM requested action: %s", action["action"])
-        tool_result = await tool_factory.execute(action["action"], action["params"])
-
+        logger.info(f"LLM requested action: {llm_response.action}")
+        
+        tool = tool_factory.build_tool(llm_response.action)
+        tool_result = await tool.execute(llm_response.params)
         contents.append(
             genai.types.Content(
                 role="model",
-                parts=[genai.types.Part(text=reply_text)],
+                parts=[genai.types.Part(text=llm_response.text)],
             )
         )
         contents.append(
@@ -73,8 +73,8 @@ class IncomingMessageHandler:
                 parts=[genai.types.Part(text=f"[Tool result]\n{tool_result}")],
             )
         )
-
-        return await self.llm_client.call(system_prompt, contents)
+        follow_up = await self.llm_client.call(system_prompt, contents)
+        return follow_up.text
 
     def _build_system_prompt(self,allergies: list[str]) -> str:
         allergy_str = ", ".join(allergies) if allergies else "None reported"
@@ -96,15 +96,3 @@ class IncomingMessageHandler:
             )
         )
         return contents
-
-    def _parse_action(self, text: str) -> dict | None:
-        stripped = text.strip()
-        if not stripped.startswith("{"):
-            return None
-        try:
-            data = json.loads(stripped)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(data, dict) and "action" in data and "params" in data:
-            return data
-        return None
