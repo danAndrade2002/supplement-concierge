@@ -18,5 +18,12 @@ class Settings(BaseSettings):
     # Google Gemini
     GEMINI_API_KEY: str = ""
 
+    # Amazon Creators API (Product Advertising / SearchItems)
+    AMAZON_CREATORS_CREDENTIAL_ID: str = ""
+    AMAZON_CREATORS_CREDENTIAL_SECRET: str = ""
+    AMAZON_CREATORS_API_VERSION: str = "2.2"
+    AMAZON_PARTNER_TAG: str = ""
+    AMAZON_MARKETPLACE: str = "www.amazon.com.br"
+
 
 settings = Settings()
