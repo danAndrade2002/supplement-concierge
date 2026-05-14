@@ -1,6 +1,8 @@
 import logging
+from pathlib import Path
 
-from fastapi import FastAPI, Form, Response
+import httpx
+from fastapi import FastAPI, Form, Query, Response
 from twilio.twiml.messaging_response import MessagingResponse
 
 from app.config import settings
@@ -37,4 +39,64 @@ async def handle_webhook(
     resp.message(reply)
     
     return Response(content=str(resp), media_type="text/xml")
+
+
+@app.get("/meli/callback")
+async def meli_callback(code: str = Query(...)):
+    """Receive the OAuth code from Mercado Livre and exchange it for tokens."""
+    verifier_file = Path(__file__).parents[1] / ".meli_code_verifier"
+    code_verifier = verifier_file.read_text().strip() if verifier_file.exists() else ""
+
+    payload = {
+        "grant_type": "authorization_code",
+        "client_id": settings.MELI_CLIENT_ID,
+        "client_secret": settings.MELI_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": settings.MELI_REDIRECT_URI,
+    }
+    if code_verifier:
+        payload["code_verifier"] = code_verifier
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(
+            "https://api.mercadolibre.com/oauth/token",
+            data=payload,
+            headers={"accept": "application/json", "content-type": "application/x-www-form-urlencoded"},
+        )
+
+    if response.status_code != 200:
+        return Response(
+            content=f"Token exchange failed: {response.text}",
+            status_code=response.status_code,
+            media_type="text/plain",
+        )
+
+    data = response.json()
+    access_token = data["access_token"]
+    refresh_token = data.get("refresh_token", "")
+
+    # Persist tokens to .env
+    env_file = Path(__file__).parents[1] / ".env"
+    try:
+        text = env_file.read_text()
+        for key, value in (("MELI_ACCESS_TOKEN", access_token), ("MELI_REFRESH_TOKEN", refresh_token)):
+            if f"{key}=" in text:
+                lines = text.splitlines()
+                text = "\n".join(
+                    f"{key}={value}" if line.startswith(f"{key}=") else line
+                    for line in lines
+                ) + "\n"
+            else:
+                text = text.rstrip("\n") + f"\n{key}={value}\n"
+        env_file.write_text(text)
+        logger.info("MELI tokens saved to .env")
+    except Exception:
+        logger.exception("Could not save MELI tokens to .env")
+
+    return {
+        "message": "Mercado Livre authenticated successfully! Tokens saved to .env.",
+        "access_token": access_token[:20] + "...",
+        "expires_in": data.get("expires_in"),
+        "scope": data.get("scope"),
+    }
 

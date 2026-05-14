@@ -11,3 +11,4 @@ celery[redis]>=5.4
 python-dotenv>=1.0
 twilio>=9.0
 python-multipart>=0.0.9
+playwright>=1.40

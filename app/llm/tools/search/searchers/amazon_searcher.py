@@ -3,30 +3,38 @@ import logging
 import re
 from typing import Any
 
-from creatorsapi_python_sdk import ApiClient, DefaultApi
-from creatorsapi_python_sdk.exceptions import ApiException
-from creatorsapi_python_sdk.models.item import Item
-from creatorsapi_python_sdk.models.search_items_request_content import SearchItemsRequestContent
-from creatorsapi_python_sdk.models.search_items_resource import SearchItemsResource
+try:
+    from creatorsapi_python_sdk import ApiClient, DefaultApi
+    from creatorsapi_python_sdk.exceptions import ApiException
+    from creatorsapi_python_sdk.models.item import Item
+    from creatorsapi_python_sdk.models.search_items_request_content import SearchItemsRequestContent
+    from creatorsapi_python_sdk.models.search_items_resource import SearchItemsResource
+    _AMAZON_SDK_AVAILABLE = True
+except ImportError:
+    _AMAZON_SDK_AVAILABLE = False
 
 from app.config import settings
 from app.llm.tools.search.searchers.searcher_interface import MarketplaceSearcher
 
 logger = logging.getLogger(__name__)
 
-_SEARCH_RESOURCES = [
-    SearchItemsResource.ITEM_INFO_DOT_TITLE,
-    SearchItemsResource.OFFERS_V2_DOT_LISTINGS_DOT_PRICE,
-]
+_SEARCH_RESOURCES = (
+    [
+        SearchItemsResource.ITEM_INFO_DOT_TITLE,
+        SearchItemsResource.OFFERS_V2_DOT_LISTINGS_DOT_PRICE,
+    ]
+    if _AMAZON_SDK_AVAILABLE
+    else []
+)
 
 
-def _item_title(item: Item) -> str:
+def _item_title(item) -> str:
     if item.item_info and item.item_info.title and item.item_info.title.display_value:
         return item.item_info.title.display_value
     return item.asin or "Unknown product"
 
 
-def _item_price(item: Item) -> float | None:
+def _item_price(item) -> float | None:
     if not item.offers_v2 or not item.offers_v2.listings:
         return None
     for listing in item.offers_v2.listings:
@@ -47,7 +55,7 @@ def _item_price(item: Item) -> float | None:
     return None
 
 
-def _item_url(item: Item) -> str:
+def _item_url(item) -> str:
     if item.detail_page_url:
         return item.detail_page_url
     if item.asin:
@@ -64,6 +72,9 @@ def _matches_exclusions(title: str, exclude_ingredients: list[str]) -> bool:
 
 
 def _run_amazon_search(query: str) -> list[dict[str, Any]]:
+    if not _AMAZON_SDK_AVAILABLE:
+        logger.warning("creatorsapi_python_sdk not installed; Amazon search skipped")
+        return []
     if not (
         settings.AMAZON_CREATORS_CREDENTIAL_ID
         and settings.AMAZON_CREATORS_CREDENTIAL_SECRET
