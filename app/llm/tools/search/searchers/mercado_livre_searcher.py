@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+import asyncio
 import httpx
 
 from app.config import settings
@@ -143,23 +144,11 @@ class MercadoLivreSearcher(MarketplaceSearcher):
             ]
 
             # Step 3: parallel-fetch the cheapest listing price for each product
-            import asyncio
             price_tasks = [_fetch_min_price(client, p["id"], headers) for p in filtered]
             prices = await asyncio.gather(*price_tasks)
 
             results = []
             catalog_urls = [_CATALOG_URL.format(product_id=p["id"]) for p in filtered]
 
-            # Generate affiliate links if session is available
-            from app.llm.tools.search.searchers.meli_affiliate import generate_affiliate_links
-            affiliate_map = await generate_affiliate_links(catalog_urls)
-
-            for product, price, catalog_url in zip(filtered, prices, catalog_urls):
-                results.append({
-                    "name": product.get("name", "Unknown product"),
-                    "price": price if price is not None else float("inf"),
-                    "url": affiliate_map.get(catalog_url, catalog_url),
-                    "source": "Mercado Livre",
-                })
-
+            # TODO: Generate affiliate links if session is available
             return results
