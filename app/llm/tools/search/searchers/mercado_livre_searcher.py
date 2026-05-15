@@ -14,7 +14,7 @@ _PRODUCT_ITEMS_URL = "https://api.mercadolibre.com/products/{product_id}/items"
 _TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 _CATALOG_URL = "https://www.mercadolivre.com.br/p/{product_id}"
 _MAX_RESULTS = 10
-_ENV_FILE = Path(__file__).parents[6] / ".env"
+_ENV_FILE = Path(__file__).parents[5] / ".env"
 
 _cached_access_token: str = ""
 
@@ -147,8 +147,16 @@ class MercadoLivreSearcher(MarketplaceSearcher):
             price_tasks = [_fetch_min_price(client, p["id"], headers) for p in filtered]
             prices = await asyncio.gather(*price_tasks)
 
-            results = []
             catalog_urls = [_CATALOG_URL.format(product_id=p["id"]) for p in filtered]
 
-            # TODO: Generate affiliate links if session is available
+            results = []
+            for product, price, url in zip(filtered, prices, catalog_urls):
+                if price is None:
+                    continue
+                results.append({
+                    "name": product.get("name", ""),
+                    "price": price,
+                    "url": url,
+                    "source": "Mercado Livre",
+                })
             return results
