@@ -44,8 +44,14 @@ async def handle_webhook(
 @app.get("/meli/callback")
 async def meli_callback(code: str = Query(...)):
     """Receive the OAuth code from Mercado Livre and exchange it for tokens."""
+    logger.info("MELI callback received (code=%s...)", code[:8])
+
     verifier_file = Path(__file__).parents[1] / ".meli_code_verifier"
     code_verifier = verifier_file.read_text().strip() if verifier_file.exists() else ""
+    if code_verifier:
+        logger.info("PKCE code_verifier found, will include in token request")
+    else:
+        logger.info("No PKCE code_verifier found, proceeding without it")
 
     payload = {
         "grant_type": "authorization_code",
@@ -57,14 +63,17 @@ async def meli_callback(code: str = Query(...)):
     if code_verifier:
         payload["code_verifier"] = code_verifier
 
+    logger.info("Exchanging authorization code for tokens")
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(
             "https://api.mercadolibre.com/oauth/token",
             data=payload,
             headers={"accept": "application/json", "content-type": "application/x-www-form-urlencoded"},
         )
+    logger.info("Token exchange response: status=%d", response.status_code)
 
     if response.status_code != 200:
+        logger.error("Token exchange failed: %s", response.text)
         return Response(
             content=f"Token exchange failed: {response.text}",
             status_code=response.status_code,
@@ -74,6 +83,11 @@ async def meli_callback(code: str = Query(...)):
     data = response.json()
     access_token = data["access_token"]
     refresh_token = data.get("refresh_token", "")
+    logger.info(
+        "Tokens received (expires_in=%s, scope=%s)",
+        data.get("expires_in"),
+        data.get("scope"),
+    )
 
     # Persist tokens to .env
     env_file = Path(__file__).parents[1] / ".env"

@@ -1,4 +1,6 @@
-from app.llm.tools.search.searchers.searcher_interface import MarketplaceSearcher 
+from app.llm.tools.search.searchers.searcher_interface import MarketplaceSearcher
+
+
 class AmazonSearcher(MarketplaceSearcher):
     async def search(
         self, query: str, exclude_ingredients: list[str]
