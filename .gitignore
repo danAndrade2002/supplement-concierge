@@ -21,3 +21,5 @@ docker-compose.override.yml
 # Celery
 celerybeat-schedule
 celerybeat-schedule.db
+.meli_code_verifier
+.meli_browser_state.json

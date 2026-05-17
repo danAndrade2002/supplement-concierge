@@ -25,5 +25,14 @@ class Settings(BaseSettings):
     AMAZON_PARTNER_TAG: str = ""
     AMAZON_MARKETPLACE: str = "www.amazon.com.br"
 
+    # Mercado Livre API
+    MELI_CLIENT_ID: str = ""
+    MELI_CLIENT_SECRET: str = ""
+    MELI_SITE_ID: str = "MLB"
+    MELI_REDIRECT_URI: str = "http://localhost:8000/meli/callback"
+    MELI_ACCESS_TOKEN: str = ""
+    MELI_REFRESH_TOKEN: str = ""
+    MELI_AFFILIATE_TAG: str = "sup"
+
 
 settings = Settings()

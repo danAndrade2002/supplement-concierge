@@ -1,4 +1,3 @@
-import abc
 import logging
 from typing import Any
 
@@ -9,23 +8,17 @@ from app.llm.tools.search.searchers.mercado_livre_searcher import MercadoLivreSe
 
 logger = logging.getLogger(__name__)
 
+
 class SearchTool(ITool):
     """LLM tool that searches for supplement products across marketplaces."""
+
     def __init__(self):
-        _searchers: list[MarketplaceSearcher] = [
-           MercadoLivreSearcher(),
-           AmazonSearcher(),
+        self._searchers: list[MarketplaceSearcher] = [
+            MercadoLivreSearcher(),
+            AmazonSearcher(),
         ]
 
     async def execute(self, params: dict[str, Any]) -> str:
-        return {
-            "name": "SearchTool",
-            "price": 100,
-            "url": "https://www.google.com",
-            "source": "Google",
-        }
-
-    async def execute_new(self, params: dict[str, Any]) -> str:
         query = params.get("query", "")
         exclude_ingredients = params.get("exclude_ingredients", [])
 
@@ -37,6 +30,8 @@ class SearchTool(ITool):
             except NotImplementedError:
                 logger.debug("Skipping %s (not implemented)", searcher.__class__.__name__)
 
+        logger.info("Search returned %d result(s): %s", len(all_results), all_results)
+
         if not all_results:
             return "No products found. The marketplace integrations are not yet configured."
 
@@ -45,5 +40,10 @@ class SearchTool(ITool):
 
         lines = []
         for i, r in enumerate(top, 1):
-            lines.append(f"{i}. {r['name']} - ${r['price']:.2f} ({r['source']})\n   {r['url']}")
-        return "\n".join(lines)
+            price = r.get("price", float("inf"))
+            price_str = f"R$ {price:.2f}" if price != float("inf") else "N/A"
+            lines.append(f"{i}. {r['name']} - {price_str} ({r['source']})\n   {r['url']}")
+
+        output = "\n".join(lines)
+        logger.info("Search tool output:\n%s", output)
+        return output
