@@ -30,6 +30,8 @@ class SearchTool(ITool):
             except NotImplementedError:
                 logger.debug("Skipping %s (not implemented)", searcher.__class__.__name__)
 
+        logger.info("Search returned %d result(s): %s", len(all_results), all_results)
+
         if not all_results:
             return "No products found. The marketplace integrations are not yet configured."
 
@@ -41,4 +43,7 @@ class SearchTool(ITool):
             price = r.get("price", float("inf"))
             price_str = f"R$ {price:.2f}" if price != float("inf") else "N/A"
             lines.append(f"{i}. {r['name']} - {price_str} ({r['source']})\n   {r['url']}")
-        return "\n".join(lines)
+
+        output = "\n".join(lines)
+        logger.info("Search tool output:\n%s", output)
+        return output

@@ -26,6 +26,16 @@ def _matches_exclusions(title: str, exclude_ingredients: list[str]) -> bool:
     return any(ing.strip().lower() in lower for ing in exclude_ingredients if ing.strip())
 
 
+def _read_env_token(key: str) -> str:
+    try:
+        for line in _ENV_FILE.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                return line[len(key) + 1:].strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _update_env_tokens(access_token: str, refresh_token: str) -> None:
     try:
         text = _ENV_FILE.read_text()
@@ -45,7 +55,7 @@ def _update_env_tokens(access_token: str, refresh_token: str) -> None:
 
 async def _refresh_access_token(client: httpx.AsyncClient) -> str:
     global _cached_access_token
-    refresh_token = settings.MELI_REFRESH_TOKEN
+    refresh_token = settings.MELI_REFRESH_TOKEN or _read_env_token("MELI_REFRESH_TOKEN")
     if not refresh_token:
         logger.warning("No MELI_REFRESH_TOKEN configured — run auth_meli.py first")
         return ""
@@ -77,8 +87,9 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
     global _cached_access_token
     if _cached_access_token:
         return _cached_access_token
-    if settings.MELI_ACCESS_TOKEN:
-        _cached_access_token = settings.MELI_ACCESS_TOKEN
+    access_token = settings.MELI_ACCESS_TOKEN or _read_env_token("MELI_ACCESS_TOKEN")
+    if access_token:
+        _cached_access_token = access_token
         return _cached_access_token
     return await _refresh_access_token(client)
 
