@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 _PRODUCTS_SEARCH_URL = "https://api.mercadolibre.com/products/search"
 _PRODUCT_ITEMS_URL = "https://api.mercadolibre.com/products/{product_id}/items"
 _TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
-_CATALOG_URL = "https://www.mercadolivre.com.br/p/{product_id}"
+_ITEM_URL = "https://produto.mercadolivre.com.br/{item_id}"
 _MAX_RESULTS = 10
 _ENV_FILE = Path(__file__).parents[5] / ".env"
-
+_AFFILIATE_LINK_URL = "http://51.79.66.17:3000/affiliate-links"
 _cached_access_token: str = ""
 
 
@@ -94,18 +94,37 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
     return await _refresh_access_token(client)
 
 
-async def _fetch_min_price(client: httpx.AsyncClient, product_id: str, headers: dict) -> float | None:
-    """Fetch the cheapest active listing price for a catalog product."""
+async def _get_affiliate_links(client: httpx.AsyncClient, urls: list[str]) -> dict[str, str]:
+    if not urls:
+        return {}
+    logger.debug("Requesting affiliate links for %d URL(s): %s", len(urls), urls)
+    try:
+        resp = await client.post(_AFFILIATE_LINK_URL, json={"urls": urls})
+        logger.debug("Affiliate API response %s: %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+        return {
+            r["origin_url"]: r["affiliate_link"] if r.get("status") == "success" and r.get("affiliate_link") else r["origin_url"]
+            for r in resp.json().get("results", [])
+        }
+    except Exception:
+        logger.warning("Failed to fetch affiliate links (payload=%s)", {"urls": urls}, exc_info=True)
+        return {}
+
+
+async def _fetch_cheapest_item(client: httpx.AsyncClient, product_id: str, headers: dict) -> tuple[float, str] | None:
+    """Fetch the price and item_id of the cheapest active listing for a catalog product."""
     try:
         url = _PRODUCT_ITEMS_URL.format(product_id=product_id)
         resp = await client.get(url, params={"status": "active", "limit": 5}, headers=headers)
         if resp.status_code != 200:
             return None
-        items = resp.json().get("results", [])
-        prices = [item["price"] for item in items if item.get("price") is not None]
-        return float(min(prices)) if prices else None
+        items = [i for i in resp.json().get("results", []) if i.get("price") is not None and i.get("item_id")]
+        if not items:
+            return None
+        cheapest = min(items, key=lambda i: i["price"])
+        return float(cheapest["price"]), cheapest["item_id"]
     except Exception:
-        logger.debug("Could not fetch price for product %s", product_id)
+        logger.debug("Could not fetch items for product %s", product_id)
         return None
 
 
@@ -123,9 +142,10 @@ class MercadoLivreSearcher(MarketplaceSearcher):
             headers = {"Authorization": f"Bearer {token}"}
 
             # Step 1: search the catalog for matching products
+            logger.info(f"Querying Mercado livre API with query: {query}")
             resp = await client.get(
                 _PRODUCTS_SEARCH_URL,
-                params={"site_id": settings.MELI_SITE_ID, "q": query, "limit": _MAX_RESULTS},
+                params={"site_id": settings.MELI_SITE_ID, "q": query, "limit": _MAX_RESULTS, "status": "active"},
                 headers=headers,
             )
 
@@ -138,7 +158,7 @@ class MercadoLivreSearcher(MarketplaceSearcher):
                 headers = {"Authorization": f"Bearer {token}"}
                 resp = await client.get(
                     _PRODUCTS_SEARCH_URL,
-                    params={"site_id": settings.MELI_SITE_ID, "q": query, "limit": _MAX_RESULTS},
+                    params={"site_id": settings.MELI_SITE_ID, "q": query, "limit": _MAX_RESULTS, "status": "active"},
                     headers=headers,
                 )
 
@@ -154,20 +174,20 @@ class MercadoLivreSearcher(MarketplaceSearcher):
                 if not _matches_exclusions(p.get("name", ""), exclude_ingredients)
             ]
 
-            # Step 3: parallel-fetch the cheapest listing price for each product
-            price_tasks = [_fetch_min_price(client, p["id"], headers) for p in filtered]
-            prices = await asyncio.gather(*price_tasks)
+            # Step 3: parallel-fetch the cheapest listing (price + item_id) for each product
+            item_tasks = [_fetch_cheapest_item(client, p["id"], headers) for p in filtered]
+            item_results = await asyncio.gather(*item_tasks)
 
-            catalog_urls = [_CATALOG_URL.format(product_id=p["id"]) for p in filtered]
+            valid = [(p, price, item_id) for p, result in zip(filtered, item_results) if result is not None for price, item_id in [result]]
+            item_urls = [_ITEM_URL.format(item_id=item_id.replace("MLB", "MLB-", 1)) for _, _, item_id in valid]
+            affiliate_map = await _get_affiliate_links(client, item_urls)
 
-            results = []
-            for product, price, url in zip(filtered, prices, catalog_urls):
-                if price is None:
-                    continue
-                results.append({
+            return [
+                {
                     "name": product.get("name", ""),
                     "price": price,
-                    "url": url,
+                    "url": affiliate_map.get(url, url),
                     "source": "Mercado Livre",
-                })
-            return results
+                }
+                for (product, price, _), url in zip(valid, item_urls)
+            ]
