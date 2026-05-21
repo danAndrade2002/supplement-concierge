@@ -1,0 +1,18 @@
+groups:
+  - name: supplement_concierge
+    interval: 30s
+    rules:
+      - alert: HighBackgroundTaskLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(bot_stage_latency_seconds_bucket{stage="total_background_task_time"}[5m])) by (le)
+          ) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 background task latency exceeds 10 s"
+          description: >
+            The 95th-percentile end-to-end latency for total_background_task_time
+            has been above 10 s for the last 2 minutes.

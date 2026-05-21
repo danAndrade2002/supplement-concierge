@@ -6,6 +6,7 @@ import httpx
 
 from app.config import settings
 from app.llm.tools.search.searchers.searcher_interface import MarketplaceSearcher
+from app.metrics import track_latency
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ async def _fetch_cheapest_item(client: httpx.AsyncClient, product_id: str, heade
 
 
 class MercadoLivreSearcher(MarketplaceSearcher):
+    @track_latency("marketplace_api_time")
     async def search(self, query: str, exclude_ingredients: list[str]) -> list[dict]:
         if not settings.MELI_CLIENT_ID:
             logger.warning("MELI_CLIENT_ID not configured; skipping Mercado Livre search")

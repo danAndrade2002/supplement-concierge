@@ -1,0 +1,14 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'null'
+  group_by: ['alertname']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h
+
+receivers:
+  - name: 'null'
+    # Add a slack_configs / email_configs / webhook_configs block here to
+    # route firing alerts to your notification channel of choice.

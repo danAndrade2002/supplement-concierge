@@ -3,6 +3,9 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Form, Query, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from app.metrics import track_latency
 from twilio.twiml.messaging_response import MessagingResponse
 
 from app.config import settings
@@ -18,7 +21,14 @@ app = FastAPI(title="WhatsApp Supplement Assistant")
 incoming_message_handler = IncomingMessageHandler()
 
 
+@app.get("/metrics")
+async def metrics():
+    """Prometheus/VictoriaMetrics scrape endpoint."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.post("/webhook")
+@track_latency("webhook_response_time")
 async def handle_webhook(
     Body: str = Form(""),
     From: str = Form(""),
@@ -31,13 +41,13 @@ async def handle_webhook(
         text=Body,
         phone_number=phone_number,
         user_name=ProfileName,
-    )   
+    )
 
     reply = await incoming_message_handler.handle(incoming_message)
     logger.info("Sending reply to %s: %s", From, reply)
     resp = MessagingResponse()
     resp.message(reply)
-    
+
     return Response(content=str(resp), media_type="text/xml")
 
 
@@ -89,7 +99,6 @@ async def meli_callback(code: str = Query(...)):
         data.get("scope"),
     )
 
-    # Persist tokens to .env
     env_file = Path(__file__).parents[1] / ".env"
     try:
         text = env_file.read_text()
@@ -113,4 +122,3 @@ async def meli_callback(code: str = Query(...)):
         "expires_in": data.get("expires_in"),
         "scope": data.get("scope"),
     }
-
