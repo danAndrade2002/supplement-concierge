@@ -51,6 +51,83 @@ services:
       - redis
     command: celery -A app.worker beat --loglevel=info
 
+  # ── Observability stack ────────────────────────────────────────────────────
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    restart: unless-stopped
+    ports:
+      - "8428:8428"
+    volumes:
+      - vmdata:/storage
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --promscrape.config=/etc/prometheus/prometheus.yml
+      - --storageDataPath=/storage
+
+  loki:
+    image: grafana/loki:2.9.4
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - lokidata:/loki
+      - ./observability/loki-config.yml:/etc/loki/config.yml:ro
+    command: -config.file=/etc/loki/config.yml
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    restart: unless-stopped
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:10.3.3
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - victoriametrics
+      - loki
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  vmalert:
+    image: victoriametrics/vmalert:latest
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    volumes:
+      - ./observability/alert.rules.yml:/etc/vmalert/alert.rules.yml:ro
+    command:
+      - --datasource.url=http://victoriametrics:8428
+      - --remoteWrite.url=http://victoriametrics:8428
+      - --notifier.url=http://alertmanager:9093
+      - --rule=/etc/vmalert/alert.rules.yml
+      - --evaluationInterval=30s
+    depends_on:
+      - victoriametrics
+      - alertmanager
+
 volumes:
   pgdata:
   redisdata:
+  vmdata:
+  lokidata:
+  grafanadata:

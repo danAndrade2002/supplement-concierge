@@ -1,8 +1,16 @@
 import logging
+import uuid
 from pathlib import Path
+
+from app.logging_config import configure_logging, request_id_var
+
+configure_logging()
 
 import httpx
 from fastapi import FastAPI, Form, Query, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
+from app.metrics import track_latency
 from twilio.twiml.messaging_response import MessagingResponse
 
 from app.config import settings
@@ -10,7 +18,6 @@ from app.handlers.incoming_message_handler import IncomingMessageHandler
 from app.util.whatsapp_util import WhatsappUtil
 from app.models.incoming_message import IncomingMessage
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="WhatsApp Supplement Assistant")
@@ -18,26 +25,34 @@ app = FastAPI(title="WhatsApp Supplement Assistant")
 incoming_message_handler = IncomingMessageHandler()
 
 
+@app.get("/metrics")
+async def metrics():
+    """Prometheus/VictoriaMetrics scrape endpoint."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.post("/webhook")
+@track_latency("webhook_response_time")
 async def handle_webhook(
     Body: str = Form(""),
     From: str = Form(""),
     ProfileName: str = Form("User"),
 ):
     """Receive and process incoming WhatsApp messages from Twilio."""
+    request_id_var.set(str(uuid.uuid4()))
     phone_number = WhatsappUtil.get_phone_number(From)
     logger.info(f"Received message from {ProfileName} ({phone_number}): {Body}")
     incoming_message = IncomingMessage(
         text=Body,
         phone_number=phone_number,
         user_name=ProfileName,
-    )   
+    )
 
     reply = await incoming_message_handler.handle(incoming_message)
     logger.info("Sending reply to %s: %s", From, reply)
     resp = MessagingResponse()
     resp.message(reply)
-    
+
     return Response(content=str(resp), media_type="text/xml")
 
 
@@ -89,7 +104,6 @@ async def meli_callback(code: str = Query(...)):
         data.get("scope"),
     )
 
-    # Persist tokens to .env
     env_file = Path(__file__).parents[1] / ".env"
     try:
         text = env_file.read_text()
@@ -113,4 +127,3 @@ async def meli_callback(code: str = Query(...)):
         "expires_in": data.get("expires_in"),
         "scope": data.get("scope"),
     }
-
