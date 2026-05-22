@@ -1,6 +1,10 @@
 import functools
+import logging
+import time
 
 from prometheus_client import Histogram
+
+logger = logging.getLogger(__name__)
 
 bot_stage_latency = Histogram(
     "bot_stage_latency_seconds",
@@ -11,11 +15,15 @@ bot_stage_latency = Histogram(
 
 
 def track_latency(stage: str):
-    """Decorator that records the wall-clock duration of an async function into bot_stage_latency."""
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
-            with bot_stage_latency.labels(stage=stage).time():
+            t0 = time.perf_counter()
+            try:
                 return await func(*args, **kwargs)
+            finally:
+                elapsed_ms = round((time.perf_counter() - t0) * 1000)
+                bot_stage_latency.labels(stage=stage).observe(elapsed_ms / 1000)
+                logger.info("%s completed in %dms", stage, elapsed_ms, extra={"stage": stage, "latency_ms": elapsed_ms})
         return wrapper
     return decorator

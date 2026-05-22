@@ -1,6 +1,4 @@
-import json
 import logging
-import uuid
 
 from google import genai
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,7 +80,7 @@ class IncomingMessageHandler:
 
     def _build_contents(self, history: list[dict], user_message: str) -> list[genai.types.Content]:
         contents = []
-        for msg in history:
+        for msg in history[:5]:
             contents.append(
                 genai.types.Content(
                     role=msg["role"],

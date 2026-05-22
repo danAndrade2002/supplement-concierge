@@ -22,13 +22,7 @@ scrape_configs:
       - source_labels: [__meta_docker_container_label_com_docker_compose_service]
         target_label: service
     pipeline_stages:
-      # Our app emits JSON to stdout; parse the structured fields into Loki labels
-      - json:
-          expressions:
-            level: level
-            event: event
-            logger: logger
+      - regex:
+          expression: '^(?P<level>\w+)\s+(\[[^\]]+\]\s+)?(?P<msg>.+)$'
       - labels:
           level:
-          event:
-          logger:
