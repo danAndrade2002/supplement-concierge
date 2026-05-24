@@ -14,7 +14,8 @@ _PRODUCTS_SEARCH_URL = "https://api.mercadolibre.com/products/search"
 _PRODUCT_ITEMS_URL = "https://api.mercadolibre.com/products/{product_id}/items"
 _TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
 _ITEM_URL = "https://produto.mercadolivre.com.br/{item_id}"
-_MAX_RESULTS = 10
+_MAX_RESULTS = 50
+_DESIRED_RESULTS = 5
 _ENV_FILE = Path(__file__).parents[5] / ".env"
 _AFFILIATE_LINK_URL = "http://51.79.66.17:3000/affiliate-links"
 _cached_access_token: str = ""
@@ -54,6 +55,7 @@ def _update_env_tokens(access_token: str, refresh_token: str) -> None:
         logger.warning("Could not persist MELI tokens to .env", exc_info=True)
 
 
+@track_latency("meli_token_refresh")
 async def _refresh_access_token(client: httpx.AsyncClient) -> str:
     global _cached_access_token
     refresh_token = settings.MELI_REFRESH_TOKEN or _read_env_token("MELI_REFRESH_TOKEN")
@@ -95,6 +97,7 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
     return await _refresh_access_token(client)
 
 
+@track_latency("meli_affiliate_links")
 async def _get_affiliate_links(client: httpx.AsyncClient, urls: list[str]) -> dict[str, str]:
     if not urls:
         return {}
@@ -112,15 +115,17 @@ async def _get_affiliate_links(client: httpx.AsyncClient, urls: list[str]) -> di
         return {}
 
 
+@track_latency("meli_fetch_cheapest_item")
 async def _fetch_cheapest_item(client: httpx.AsyncClient, product_id: str, headers: dict) -> tuple[float, str] | None:
-    """Fetch the price and item_id of the cheapest active listing for a catalog product."""
     try:
         url = _PRODUCT_ITEMS_URL.format(product_id=product_id)
         resp = await client.get(url, params={"status": "active", "limit": 5}, headers=headers)
         if resp.status_code != 200:
+            logger.warning("meli_fetch_cheapest_item: product %s returned status %s — %s", product_id, resp.status_code, resp.text[:200])
             return None
         items = [i for i in resp.json().get("results", []) if i.get("price") is not None and i.get("item_id")]
         if not items:
+            logger.debug("meli_fetch_cheapest_item: no active priced items for product %s", product_id)
             return None
         cheapest = min(items, key=lambda i: i["price"])
         return float(cheapest["price"]), cheapest["item_id"]
@@ -171,16 +176,35 @@ class MercadoLivreSearcher(MarketplaceSearcher):
             products = resp.json().get("results", [])
 
             # Step 2: filter by excluded ingredients on the product name
-            filtered = [
-                p for p in products
-                if not _matches_exclusions(p.get("name", ""), exclude_ingredients)
-            ]
+            # filtered = [
+            #     p for p in products
+            #     if not _matches_exclusions(p.get("name", ""), exclude_ingredients)
+            # ]
+            filtered = products
+            # Step 3: parallel-fetch cheapest listing per product, stop once we have enough
+            tasks = {
+                asyncio.ensure_future(_fetch_cheapest_item(client, p["id"], headers)): p
+                for p in filtered
+            }
+            valid: list[tuple[dict, float, str]] = []
+            pending = set(tasks)
+            try:
+                while pending and len(valid) < _DESIRED_RESULTS:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    for fut in done:
+                        result = fut.result()
+                        if result is not None:
+                            price, item_id = result
+                            valid.append((tasks[fut], price, item_id))
+            finally:
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
 
-            # Step 3: parallel-fetch the cheapest listing (price + item_id) for each product
-            item_tasks = [_fetch_cheapest_item(client, p["id"], headers) for p in filtered]
-            item_results = await asyncio.gather(*item_tasks)
-
-            valid = [(p, price, item_id) for p, result in zip(filtered, item_results) if result is not None for price, item_id in [result]]
+            logger.info(
+                "meli_fetch_cheapest_item: %d/%d products had active sellers",
+                len(valid), len(filtered),
+            )
             item_urls = [_ITEM_URL.format(item_id=item_id.replace("MLB", "MLB-", 1)) for _, _, item_id in valid]
             affiliate_map = await _get_affiliate_links(client, item_urls)
 
@@ -191,5 +215,5 @@ class MercadoLivreSearcher(MarketplaceSearcher):
                     "url": affiliate_map.get(url, url),
                     "source": "Mercado Livre",
                 }
-                for (product, price, _), url in zip(valid, item_urls)
+                for (product, price, _item_id), url in zip(valid, item_urls)
             ]
