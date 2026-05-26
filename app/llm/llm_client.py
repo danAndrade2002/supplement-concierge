@@ -14,7 +14,7 @@ class LLMClient:
 
     def __init__(self):
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model = "gemini-3-flash-preview"
+        self.model = "gemini-3.5-flash"
 
     @track_latency("gemini_generation_time")
     async def call(self, system_prompt: str, contents: list[genai.types.Content]) -> LLMResponse:
