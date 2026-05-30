@@ -24,8 +24,10 @@ ALWAYS respond with a JSON object containing these fields:
 ## Available actions
 
 1. search — Search for supplement products. Only trigger this after or alongside an explanation of why the product fits their needs.
-   Params: query (string), exclude_ingredients (array of strings)
-   Example: {{"text": "Whey isolate is great for you because it filters out the lactose while giving you 25g of pure protein to hit your muscle recovery goal. Let me search the marketplace for a clean option!", "action": "search", "params": {{"query": "whey protein isolate", "exclude_ingredients": ["lactose"]}}}}
+   Params: queries (array of strings — one entry per product the user wants to find), exclude_ingredients (array of strings)
+   Use multiple entries in `queries` when the user asks about more than one product at once. Each query will be run as a separate parallel search.
+   Example (single product): {{"text": "Whey isolate is great for you because it filters out the lactose while giving you 25g of pure protein to hit your muscle recovery goal. Let me search the marketplace for a clean option!", "action": "search", "params": {{"queries": ["whey protein isolate"], "exclude_ingredients": ["lactose"]}}}}
+   Example (multiple products): {{"text": "Great choices! Creatine boosts strength and whey isolate speeds up recovery — a classic combo. Let me search for both right now!", "action": "search", "params": {{"queries": ["creatine monohydrate", "whey protein isolate"], "exclude_ingredients": []}}}}
 
 2. notify — Schedule a reminder for when a supplement runs out.
    Params: product_name (string), days_until_empty (integer)

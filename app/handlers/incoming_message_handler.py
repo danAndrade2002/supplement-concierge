@@ -59,14 +59,18 @@ class IncomingMessageHandler:
         logger.info("LLM requested action: %s", llm_response.action)
 
         if llm_response.action == "search":
-            run_search_and_reply.delay(
-                phone_number=phone_number,
-                user_id=user_id,
-                query=llm_response.params.get("query", ""),
-                exclude_ingredients=llm_response.params.get("exclude_ingredients", []),
-                llm_waiting_text=llm_response.text,
-                allergies=allergies,
-            )
+            queries = llm_response.params.get("queries", [])
+            exclude_ingredients = llm_response.params.get("exclude_ingredients", [])
+            for query in queries:
+                run_search_and_reply.delay(
+                    phone_number=phone_number,
+                    user_id=user_id,
+                    query=query,
+                    exclude_ingredients=exclude_ingredients,
+                    llm_waiting_text=llm_response.text,
+                    allergies=allergies,
+                )
+            logger.info("Enqueued %d search task(s) for user %s", len(queries), user_id)
         
 
         return llm_response.text
