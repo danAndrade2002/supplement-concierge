@@ -34,5 +34,8 @@ class Settings(BaseSettings):
     MELI_REFRESH_TOKEN: str = ""
     MELI_AFFILIATE_TAG: str = "sup"
 
+    # Mercado Livre search scraper service (self-hosted /search endpoint)
+    MELI_SEARCH_BASE_URL: str = "http://localhost:3000"
+
 
 settings = Settings()

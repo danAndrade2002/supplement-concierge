@@ -1,7 +1,5 @@
 import logging
-from pathlib import Path
 
-import asyncio
 import httpx
 
 from app.config import settings
@@ -10,15 +8,13 @@ from app.metrics import track_latency
 
 logger = logging.getLogger(__name__)
 
-_PRODUCTS_SEARCH_URL = "https://api.mercadolibre.com/products/search"
-_PRODUCT_ITEMS_URL = "https://api.mercadolibre.com/products/{product_id}/items"
-_TOKEN_URL = "https://api.mercadolibre.com/oauth/token"
-_ITEM_URL = "https://produto.mercadolivre.com.br/{item_id}"
-_MAX_RESULTS = 50
-_DESIRED_RESULTS = 5
-_ENV_FILE = Path(__file__).parents[5] / ".env"
+_SEARCH_LIMIT = 50
+_REQUEST_TIMEOUT = 45.0
 _AFFILIATE_LINK_URL = "http://51.79.66.17:3000/affiliate-links"
-_cached_access_token: str = ""
+# The affiliate backend's upstream (Mercado Livre createLink) rejects batches
+# above ~30 URLs outright, so keep well under that and only bother generating
+# links for the handful of results we'll actually show.
+_AFFILIATE_LINK_LIMIT = 5
 
 
 def _matches_exclusions(title: str, exclude_ingredients: list[str]) -> bool:
@@ -26,75 +22,6 @@ def _matches_exclusions(title: str, exclude_ingredients: list[str]) -> bool:
         return False
     lower = title.lower()
     return any(ing.strip().lower() in lower for ing in exclude_ingredients if ing.strip())
-
-
-def _read_env_token(key: str) -> str:
-    try:
-        for line in _ENV_FILE.read_text().splitlines():
-            if line.startswith(f"{key}="):
-                return line[len(key) + 1:].strip()
-    except Exception:
-        pass
-    return ""
-
-
-def _update_env_tokens(access_token: str, refresh_token: str) -> None:
-    try:
-        text = _ENV_FILE.read_text()
-        for key, value in (("MELI_ACCESS_TOKEN", access_token), ("MELI_REFRESH_TOKEN", refresh_token)):
-            if f"{key}=" in text:
-                lines = text.splitlines()
-                text = "\n".join(
-                    f"{key}={value}" if line.startswith(f"{key}=") else line
-                    for line in lines
-                ) + "\n"
-            else:
-                text = text.rstrip("\n") + f"\n{key}={value}\n"
-        _ENV_FILE.write_text(text)
-    except Exception:
-        logger.warning("Could not persist MELI tokens to .env", exc_info=True)
-
-
-@track_latency("meli_token_refresh")
-async def _refresh_access_token(client: httpx.AsyncClient) -> str:
-    global _cached_access_token
-    refresh_token = settings.MELI_REFRESH_TOKEN or _read_env_token("MELI_REFRESH_TOKEN")
-    if not refresh_token:
-        logger.warning("No MELI_REFRESH_TOKEN configured — run auth_meli.py first")
-        return ""
-    try:
-        response = await client.post(
-            _TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "client_id": settings.MELI_CLIENT_ID,
-                "client_secret": settings.MELI_CLIENT_SECRET,
-                "refresh_token": refresh_token,
-            },
-            headers={"accept": "application/json", "content-type": "application/x-www-form-urlencoded"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        new_access = data["access_token"]
-        new_refresh = data.get("refresh_token", refresh_token)
-        _cached_access_token = new_access
-        _update_env_tokens(new_access, new_refresh)
-        logger.info("MELI access token refreshed")
-        return new_access
-    except Exception:
-        logger.exception("Failed to refresh MELI access token")
-        return ""
-
-
-async def _get_access_token(client: httpx.AsyncClient) -> str:
-    global _cached_access_token
-    if _cached_access_token:
-        return _cached_access_token
-    access_token = settings.MELI_ACCESS_TOKEN or _read_env_token("MELI_ACCESS_TOKEN")
-    if access_token:
-        _cached_access_token = access_token
-        return _cached_access_token
-    return await _refresh_access_token(client)
 
 
 @track_latency("meli_affiliate_links")
@@ -115,105 +42,72 @@ async def _get_affiliate_links(client: httpx.AsyncClient, urls: list[str]) -> di
         return {}
 
 
-@track_latency("meli_fetch_cheapest_item")
-async def _fetch_cheapest_item(client: httpx.AsyncClient, product_id: str, headers: dict) -> tuple[float, str] | None:
+async def _call_search_api(client: httpx.AsyncClient, query: str) -> list[dict]:
+    params = {"q": query, "limit": _SEARCH_LIMIT}
+    url = f"{settings.MELI_SEARCH_BASE_URL}/search"
+
     try:
-        url = _PRODUCT_ITEMS_URL.format(product_id=product_id)
-        resp = await client.get(url, params={"status": "active", "limit": 5}, headers=headers)
-        if resp.status_code != 200:
-            logger.warning("meli_fetch_cheapest_item: product %s returned status %s — %s", product_id, resp.status_code, resp.text[:200])
-            return None
-        items = [i for i in resp.json().get("results", []) if i.get("price") is not None and i.get("item_id")]
-        if not items:
-            logger.debug("meli_fetch_cheapest_item: no active priced items for product %s", product_id)
-            return None
-        cheapest = min(items, key=lambda i: i["price"])
-        return float(cheapest["price"]), cheapest["item_id"]
-    except Exception:
-        logger.debug("Could not fetch items for product %s", product_id)
-        return None
+        resp = await client.get(url, params=params)
+    except (httpx.TimeoutException, httpx.RequestError):
+        logger.warning("MELI search request failed (network error)", exc_info=True)
+        return []
+
+    if resp.status_code == 200:
+        logger.info("MELI search API response %s: %s", resp.status_code, resp.text)
+        return resp.json().get("results", [])
+
+    if resp.status_code == 401:
+        logger.error(
+            "MELI search backend session expired; needs manual re-auth on server: %s",
+            resp.text[:500],
+        )
+        return []
+
+    if resp.status_code == 500:
+        logger.warning("MELI search failed with 500, retrying once: %s", resp.text[:500])
+        try:
+            resp = await client.get(url, params=params)
+        except (httpx.TimeoutException, httpx.RequestError):
+            logger.warning("MELI search retry failed (network error)", exc_info=True)
+            return []
+        if resp.status_code == 200:
+            logger.info("MELI search API response %s: %s", resp.status_code, resp.text)
+            return resp.json().get("results", [])
+        logger.error("MELI search failed again after retry (status %s): %s", resp.status_code, resp.text[:500])
+        return []
+
+    logger.error("MELI search failed (status %s): %s", resp.status_code, resp.text[:500])
+    return []
 
 
 class MercadoLivreSearcher(MarketplaceSearcher):
     @track_latency("marketplace_api_time")
     async def search(self, query: str, exclude_ingredients: list[str]) -> list[dict]:
-        if not settings.MELI_CLIENT_ID:
-            logger.warning("MELI_CLIENT_ID not configured; skipping Mercado Livre search")
+        if not query.strip():
             return []
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            token = await _get_access_token(client)
-            if not token:
-                return []
+        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
+            logger.info("Querying Mercado Livre search endpoint with query: %s", query)
+            items = await _call_search_api(client, query)
 
-            headers = {"Authorization": f"Bearer {token}"}
+            valid = [
+                item for item in items
+                if item.get("title") and item.get("price") is not None and item.get("url")
+            ]
 
-            # Step 1: search the catalog for matching products
-            logger.info(f"Querying Mercado livre API with query: {query}")
-            resp = await client.get(
-                _PRODUCTS_SEARCH_URL,
-                params={"site_id": settings.MELI_SITE_ID, "q": query, "limit": _MAX_RESULTS, "status": "active"},
-                headers=headers,
-            )
-
-            if resp.status_code == 401:
-                global _cached_access_token
-                _cached_access_token = ""
-                token = await _refresh_access_token(client)
-                if not token:
-                    return []
-                headers = {"Authorization": f"Bearer {token}"}
-                resp = await client.get(
-                    _PRODUCTS_SEARCH_URL,
-                    params={"site_id": settings.MELI_SITE_ID, "q": query, "limit": _MAX_RESULTS, "status": "active"},
-                    headers=headers,
-                )
-
-            if resp.status_code != 200:
-                logger.error("Mercado Livre products search failed (status %s)", resp.status_code)
-                return []
-
-            products = resp.json().get("results", [])
-
-            # Step 2: filter by excluded ingredients on the product name
-            # filtered = [
-            #     p for p in products
-            #     if not _matches_exclusions(p.get("name", ""), exclude_ingredients)
-            # ]
-            filtered = products
-            # Step 3: parallel-fetch cheapest listing per product, stop once we have enough
-            tasks = {
-                asyncio.ensure_future(_fetch_cheapest_item(client, p["id"], headers)): p
-                for p in filtered
-            }
-            valid: list[tuple[dict, float, str]] = []
-            pending = set(tasks)
-            try:
-                while pending and len(valid) < _DESIRED_RESULTS:
-                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                    for fut in done:
-                        result = fut.result()
-                        if result is not None:
-                            price, item_id = result
-                            valid.append((tasks[fut], price, item_id))
-            finally:
-                for t in pending:
-                    t.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-
-            logger.info(
-                "meli_fetch_cheapest_item: %d/%d products had active sellers",
-                len(valid), len(filtered),
-            )
-            item_urls = [_ITEM_URL.format(item_id=item_id.replace("MLB", "MLB-", 1)) for _, _, item_id in valid]
-            affiliate_map = await _get_affiliate_links(client, item_urls)
+            # Only the cheapest few items end up shown to the user (search_tool
+            # sorts by price and takes the top 3), so generate affiliate links
+            # for the cheapest candidates rather than the first N in search order.
+            cheapest_first = sorted(valid, key=lambda item: item["price"])
+            urls = [item["url"] for item in cheapest_first[:_AFFILIATE_LINK_LIMIT]]
+            affiliate_map = await _get_affiliate_links(client, urls)
 
             return [
                 {
-                    "name": product.get("name", ""),
-                    "price": price,
-                    "url": affiliate_map.get(url, url),
+                    "name": item["title"],
+                    "price": item["price"],
+                    "url": affiliate_map.get(item["url"], item["url"]),
                     "source": "Mercado Livre",
                 }
-                for (product, price, _item_id), url in zip(valid, item_urls)
+                for item in valid
             ]
